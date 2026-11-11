@@ -14,11 +14,14 @@ export const LoginPage: React.FC = () => {
     setError(null);
     setIsSubmitting(true);
     try {
-      await login(identifier, password);
+      const trimmedId = identifier.trim();
+      const trimmedPwd = password.trim();
+      await login(trimmedId, trimmedPwd);
       window.location.href = '/';
     } catch (err: any) {
+      console.error('Erreur login:', err);
       setError(
-        err.response?.data?.message || 'Échec de connexion : vérifiez vos identifiants républicains'
+        err.response?.data?.message || err.message || 'Échec de connexion : vérifiez vos identifiants républicains'
       );
     } finally {
       setIsSubmitting(false);
