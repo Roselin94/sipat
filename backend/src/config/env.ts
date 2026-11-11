@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { z } from 'zod';
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config();
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
