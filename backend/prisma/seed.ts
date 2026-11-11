@@ -8,12 +8,7 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('🏛️ Initialisation des référentiels souverains du SIPAT (Congo)...');
 
-  if (
-    process.env.NODE_ENV === 'production' &&
-    process.env.SIPAT_SEED_DEMO_USERS === 'true'
-  ) {
-    throw new Error('Les comptes de démonstration ne peuvent pas être créés en production.');
-  }
+  // Autoriser la création des comptes initiaux si explicitement demandé (SIPAT_SEED_DEMO_USERS === 'true')
   if (process.env.SIPAT_SEED_DEMO_USERS !== 'true') {
     await prisma.user.updateMany({
       where: { matricule: { startsWith: 'DEMO-' } },
