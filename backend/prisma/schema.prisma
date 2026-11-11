@@ -1,0 +1,566 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -------------------------------------------------------------
+// ENUMS DE SÉCURITÉ ET WORKFLOW RÉGALIEN
+// -------------------------------------------------------------
+
+enum OrganizationType {
+  MINISTRY           // Ministère (ex: MAT, MITP, MEF...)
+  GENERAL_DIRECTION  // Direction Générale (ex: DGAT, DGGT...)
+  DEPARTEMENT_OFFICE // Direction Départementale (ex: DDAT Niari...)
+  MUNICIPALITY       // Mairie / Commune urbaine
+  DISTRICT_OFFICE    // Sous-préfecture / District
+  PUBLIC_AGENCY      // Établissement public / Agence d'exécution
+  TECHNICAL_PARTNER  // Bailleur / Partenaire Technique et Financier (BAD, BM, UE)
+}
+
+enum RoleCode {
+  SUPER_ADMIN           // Administrateur Système National
+  MINISTER_DIRECTOR     // Ministre / DirCab / Secrétaire Général (Décisionnaire Niveau 2)
+  TECHNICAL_VALIDATOR   // Instructeur / Ingénieur d'État (Validation Technique Niveau 1)
+  REGIONAL_DIRECTOR     // Directeur Départemental / Superviseur Territorial
+  PROJECT_MANAGER       // Chef de Projet / Maître d'Œuvre (Opérateur)
+  FIELD_INSPECTOR       // Inspecteur / Contrôleur Terrain (PWA Hors-ligne)
+  FINANCIAL_CONTROLLER  // Contrôleur Financier / Trésor Public
+  AUDITOR_READONLY      // Cour des Comptes / Inspection d'État (Audit)
+}
+
+enum TerritorialLevel {
+  NATIONAL
+  DEPARTMENT
+  COMMUNE_DISTRICT
+  LOCALITY
+}
+
+enum WorkflowTargetType {
+  PROJECT_CREATION      // Validation de création ou modification de fiche projet
+  PHYSICAL_MILESTONE    // Constat de jalon d'avancement physique
+  FINANCIAL_DISBURSEMENT // Décompte ou ordonnancement de paiement
+  RECEPTION_PV          // Procès-verbal de réception provisoire ou définitive
+}
+
+enum WorkflowStepType {
+  TECHNICAL_REVIEW      // Étape 1 : Expertise et conformité technique
+  INSTITUTIONAL_APPROVAL // Étape 2 : Opportunité, conformité budgétaire et visa d'autorité
+}
+
+enum WorkflowDecision {
+  PENDING
+  APPROVED
+  REJECTED_WITH_RESERVATIONS
+  REJECTED_DEFINITIVELY
+}
+
+enum ProjectStatus {
+  DRAFT                 // En cours de rédaction
+  SUBMITTED_FOR_REVIEW  // En cours de circuit d'approbation
+  TECHNICAL_APPROVED    // Validé au niveau 1 (technique)
+  APPROVED              // Validé au niveau 2 (institutionnel) -> Actif
+  IN_PROGRESS           // En phase d'exécution des travaux
+  SUSPENDED             // Chantier suspendu pour contentieux/aléas
+  COMPLETED             // Travaux achevés avec réceptions
+  REJECTED              // Rejeté par l'autorité
+}
+
+enum MilestoneStatus {
+  PLANNED
+  IN_PROGRESS
+  PENDING_TECH_REVIEW
+  PENDING_INST_APPROVAL
+  VALIDATED
+  REJECTED
+}
+
+enum PaymentStatus {
+  DRAFT
+  PENDING_TECH_AUDIT
+  PENDING_TREASURY_VISA
+  VALIDATED_FOR_PAYMENT
+  PAID
+  REJECTED
+}
+
+enum DocumentConfidentiality {
+  PUBLIC
+  RESTRICTED_ADMIN
+  CONFIDENTIAL_DEFENSE
+  FINANCIAL_CONFIDENTIAL
+}
+
+// -------------------------------------------------------------
+// 1. MODULE TERRITOIRE & DÉCOUPAGE ADMINISTRATIF DU CONGO
+// -------------------------------------------------------------
+
+model Department {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  code        String   @unique @db.VarChar(10) // ex: BZV, PNR, NIA, BOU, PLT, CUV, CVW, SAN, LIK, KOU, LKL, POO
+  name        String   @unique @db.VarChar(100) // ex: Brazzaville, Pointe-Noire, Niari, Bouenza...
+  capital     String   @db.VarChar(100)
+  geoJson     String?  @db.LongText // Périmètre polygone officiel
+  latitude    Float?
+  longitude   Float?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  districts   District[]
+  projects    Project[]
+  users       User[]
+
+  @@map("geo_departments")
+}
+
+model District {
+  id           String      @id @default(uuid()) @db.VarChar(36)
+  code         String      @unique @db.VarChar(20)
+  name         String      @db.VarChar(100)
+  departmentId String      @db.VarChar(36)
+  department   Department  @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  isUrban      Boolean     @default(false) // true = Commune urbaine / Arrondissement
+  geoJson      String?     @db.LongText
+  latitude     Float?
+  longitude    Float?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  projects     Project[]
+  users        User[]
+
+  @@index([departmentId])
+  @@map("geo_districts")
+}
+
+// -------------------------------------------------------------
+// 2. MODULE ORGANISATIONS MULTI-ADMINISTRATIONS
+// -------------------------------------------------------------
+
+model Organization {
+  id          String           @id @default(uuid()) @db.VarChar(36)
+  code        String           @unique @db.VarChar(30) // ex: MAT, MITP, MEF, DDAT_NIA
+  name        String           @db.VarChar(255)
+  shortName   String           @db.VarChar(50)
+  type        OrganizationType
+  parentId    String?          @db.VarChar(36) // Hiérarchie administrative
+  parent      Organization?    @relation("OrgHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children    Organization[]   @relation("OrgHierarchy")
+  address     String?          @db.VarChar(255)
+  contactEmail String?         @db.VarChar(100)
+  contactPhone String?         @db.VarChar(50)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  users       User[]
+  projects    Project[]        @relation("ProjectLeadMinistry")
+  workflows   WorkflowInstance[]
+
+  @@index([parentId])
+  @@index([type])
+  @@map("gov_organizations")
+}
+
+// -------------------------------------------------------------
+// 3. MODULE UTILISATEURS, AUTHENTIFICATION ET RBAC
+// -------------------------------------------------------------
+
+model User {
+  id              String            @id @default(uuid()) @db.VarChar(36)
+  matricule       String            @unique @db.VarChar(50) // Matricule Fonction Publique ou identifiant unique
+  email           String            @unique @db.VarChar(150)
+  passwordHash    String            @db.VarChar(255)
+  firstName       String            @db.VarChar(100)
+  lastName        String            @db.VarChar(100)
+  phone           String?           @db.VarChar(50)
+  functionTitle   String            @db.VarChar(150) // ex: Ingénieur en chef des TP, DGA
+  isActive        Boolean           @default(true)
+  isLocked        Boolean           @default(false)
+  failedAttempts  Int               @default(0)
+  lastLoginAt     DateTime?
+  tokenVersion    Int               @default(1) // Pour révocation immédiate de tokens
+
+  // Rattachement Institutionnel Obligatoire
+  organizationId  String            @db.VarChar(36)
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  // Restriction Territoriale (Optionnelle : si null, compétence nationale selon rôle)
+  territorialScope TerritorialLevel @default(NATIONAL)
+  departmentId    String?           @db.VarChar(36)
+  department      Department?       @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  districtId      String?           @db.VarChar(36)
+  district        District?         @relation(fields: [districtId], references: [id], onDelete: SetNull)
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  userRoles       UserRole[]
+  refreshTokens   RefreshToken[]
+  auditLogs       AuditLog[]
+  workflowReviews WorkflowReview[]
+  managedProjects Project[]         @relation("ProjectManagerUser")
+  fieldReports    FieldReport[]
+
+  @@index([organizationId])
+  @@index([departmentId])
+  @@index([districtId])
+  @@map("auth_users")
+}
+
+model Role {
+  id          String     @id @default(uuid()) @db.VarChar(36)
+  code        RoleCode   @unique
+  name        String     @db.VarChar(100)
+  description String     @db.VarChar(255)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  userRoles   UserRole[]
+  permissions RolePermission[]
+
+  @@map("auth_roles")
+}
+
+model UserRole {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  userId    String   @db.VarChar(36)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String   @db.VarChar(36)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("auth_user_roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  code        String   @unique @db.VarChar(100) // ex: project:create, milestone:validate:tech, etc.
+  name        String   @db.VarChar(150)
+  module      String   @db.VarChar(50)
+  description String   @db.VarChar(255)
+  createdAt   DateTime @default(now())
+
+  roles       RolePermission[]
+
+  @@map("auth_permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid()) @db.VarChar(36)
+  roleId       String     @db.VarChar(36)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String     @db.VarChar(36)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("auth_role_permissions")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  tokenHash String   @unique @db.VarChar(64)
+  userId    String   @db.VarChar(36)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  ipAddress String?  @db.VarChar(45)
+  userAgent String?  @db.VarChar(255)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("auth_refresh_tokens")
+}
+
+// -------------------------------------------------------------
+// 4. MODULE PROJETS & AMÉNAGEMENT DU TERRITOIRE
+// -------------------------------------------------------------
+
+model Project {
+  id                  String             @id @default(uuid()) @db.VarChar(36)
+  code                String             @unique @db.VarChar(50) // Code officiel Répertoire National Projets
+  title               String             @db.VarChar(255)
+  description         String             @db.Text
+  sector              String             @db.VarChar(100) // Routes, Énergie, Eau, Santé, Éducation...
+  status              ProjectStatus      @default(DRAFT)
+  
+  // Maîtrise d'Ouvrage & Responsabilités
+  leadMinistryId      String             @db.VarChar(36)
+  leadMinistry        Organization       @relation("ProjectLeadMinistry", fields: [leadMinistryId], references: [id], onDelete: Restrict)
+  projectManagerId    String?            @db.VarChar(36)
+  projectManager      User?              @relation("ProjectManagerUser", fields: [projectManagerId], references: [id], onDelete: SetNull)
+  contractorName      String?            @db.VarChar(200) // Entreprise adjudicataire
+  supervisingFirm     String?            @db.VarChar(200) // Bureau de contrôle / Mission de contrôle
+
+  // Emplacement Territorial & SIG
+  departmentId        String             @db.VarChar(36)
+  department          Department         @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  districtId          String?            @db.VarChar(36)
+  district            District?          @relation(fields: [districtId], references: [id], onDelete: SetNull)
+  localityName        String?            @db.VarChar(150)
+  latitude            Float?
+  longitude           Float?
+  geoJsonShape        String?            @db.LongText // Tracé routier ou emprise polygonale
+
+  // Découplage Exécution Physique & Budget
+  totalBudgetPlanned  Decimal            @db.Decimal(18, 2) // En FCFA (Franc CFA BEAC)
+  totalAmountCommitted Decimal           @default(0) @db.Decimal(18, 2)
+  totalAmountDisbursed Decimal           @default(0) @db.Decimal(18, 2)
+  physicalProgressPct Decimal            @default(0) @db.Decimal(5, 2) // 0.00% à 100.00%
+
+  startDatePlanned    DateTime?
+  endDatePlanned      DateTime?
+  startDateActual     DateTime?
+  endDateActual       DateTime?
+
+  version             Int                @default(1) // Verrouillage optimiste
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  milestones          ProjectMilestone[]
+  payments            FinancialDisbursement[]
+  documents           ProjectDocument[]
+  workflowInstances   WorkflowInstance[]
+  fieldReports        FieldReport[]
+
+  @@index([leadMinistryId])
+  @@index([departmentId])
+  @@index([districtId])
+  @@index([status])
+  @@index([code])
+  @@map("prj_projects")
+}
+
+// -------------------------------------------------------------
+// 5. JALONS PHYSIQUES & DISTINCTION STRICTE AVEC FINANCES
+// -------------------------------------------------------------
+
+model ProjectMilestone {
+  id                  String             @id @default(uuid()) @db.VarChar(36)
+  projectId           String             @db.VarChar(36)
+  project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title               String             @db.VarChar(200)
+  description         String?            @db.Text
+  targetProgressPct   Decimal            @db.Decimal(5, 2)
+  actualProgressPct   Decimal            @default(0) @db.Decimal(5, 2)
+  dueDate             DateTime?
+  achievedDate        DateTime?
+  status              MilestoneStatus    @default(PLANNED)
+
+  // Justification technique
+  technicalNotes      String?            @db.Text
+  hasReservations     Boolean            @default(false)
+  reservationsDetails String?            @db.Text
+
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  workflows           WorkflowInstance[]
+  fieldReports        FieldReport[]
+
+  @@index([projectId])
+  @@index([status])
+  @@map("prj_milestones")
+}
+
+// -------------------------------------------------------------
+// 6. GESTION FINANCIÈRE RÉGALIENNE & DÉCOMPTES
+// -------------------------------------------------------------
+
+model FinancialDisbursement {
+  id                  String             @id @default(uuid()) @db.VarChar(36)
+  projectId           String             @db.VarChar(36)
+  project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  disbursementNumber  String             @unique @db.VarChar(50) // ex: DEC-2026-BZV-001
+  invoiceReference    String             @db.VarChar(100)
+  amountRequested     Decimal            @db.Decimal(18, 2) // FCFA
+  amountValidated     Decimal?           @db.Decimal(18, 2) // FCFA validé après décompte
+  status              PaymentStatus      @default(DRAFT)
+  
+  // Rapprochement avec avancement physique
+  linkedPhysicalPct   Decimal            @db.Decimal(5, 2) // Pourcentage physique au moment de la demande
+  isFullyJustified    Boolean            @default(false)
+  justificationMemo   String?            @db.Text
+
+  // Dates et contrôle
+  submissionDate      DateTime           @default(now())
+  validationDate      DateTime?
+  paymentDate         DateTime?
+
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  workflows           WorkflowInstance[]
+  documents           ProjectDocument[]
+
+  @@index([projectId])
+  @@index([status])
+  @@map("fin_disbursements")
+}
+
+// -------------------------------------------------------------
+// 7. MOTEUR DE WORKFLOW & DOUBLE VALIDATION INDÉPENDANTE
+// -------------------------------------------------------------
+
+model WorkflowInstance {
+  id                  String             @id @default(uuid()) @db.VarChar(36)
+  targetType          WorkflowTargetType
+  targetId            String             @db.VarChar(64) // ID de la cible (Project, Milestone, Disbursement...)
+  title               String             @db.VarChar(255)
+  currentStep         WorkflowStepType   @default(TECHNICAL_REVIEW)
+  isCompleted         Boolean            @default(false)
+  isRejected          Boolean            @default(false)
+
+  // Liens optionnels directs pour intégrité et requêtes rapides
+  projectId           String?            @db.VarChar(36)
+  project             Project?           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestoneId         String?            @db.VarChar(36)
+  milestone           ProjectMilestone?  @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+  disbursementId      String?            @db.VarChar(36)
+  disbursement        FinancialDisbursement? @relation(fields: [disbursementId], references: [id], onDelete: Cascade)
+  organizationId      String?            @db.VarChar(36)
+  organization        Organization?      @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  reviews             WorkflowReview[]
+
+  @@index([targetType, targetId])
+  @@index([projectId])
+  @@index([currentStep])
+  @@index([isCompleted])
+  @@map("wf_instances")
+}
+
+model WorkflowReview {
+  id                  String             @id @default(uuid()) @db.VarChar(36)
+  instanceId          String             @db.VarChar(36)
+  instance            WorkflowInstance   @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  stepType            WorkflowStepType   // TECHNICAL_REVIEW ou INSTITUTIONAL_APPROVAL
+  reviewerId          String             @db.VarChar(36)
+  reviewer            User               @relation(fields: [reviewerId], references: [id], onDelete: Restrict)
+  decision            WorkflowDecision
+  comments            String             @db.Text
+  reservations        String?            @db.Text
+  snapshotDataHash    String             @db.VarChar(64) // SHA-256 de la charge utile validée (Immuabilité)
+  ipAddress           String?            @db.VarChar(45)
+  reviewedAt          DateTime           @default(now())
+
+  @@index([instanceId])
+  @@index([reviewerId])
+  @@index([stepType])
+  @@index([decision])
+  @@map("wf_reviews")
+}
+
+// -------------------------------------------------------------
+// 8. RAPPORTS TERRAIN & SYNCHRONISATION PWA HORS-LIGNE
+// -------------------------------------------------------------
+
+model FieldReport {
+  id                  String             @id @default(uuid()) @db.VarChar(36)
+  localOfflineId      String?            @unique @db.VarChar(64) // UUID généré côté client PWA
+  projectId           String             @db.VarChar(36)
+  project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestoneId         String?            @db.VarChar(36)
+  milestone           ProjectMilestone?  @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  inspectorId         String             @db.VarChar(36)
+  inspector           User               @relation(fields: [inspectorId], references: [id], onDelete: Restrict)
+  
+  reportedProgressPct Decimal            @db.Decimal(5, 2)
+  findings            String             @db.Text
+  anomaliesObserved   String?            @db.Text
+  gpsLatitude         Float?
+  gpsLongitude        Float?
+  gpsAccuracyMeters   Float?
+  collectedAtLocal    DateTime           // Date constatation physique terrain
+  syncedAtServer      DateTime           @default(now()) // Date réelle de synchronisation
+
+  documents           ProjectDocument[]
+
+  @@index([projectId])
+  @@index([inspectorId])
+  @@index([localOfflineId])
+  @@map("field_reports")
+}
+
+// -------------------------------------------------------------
+// 9. COFFRE-FORT DOCUMENTAIRE & PIÈCES JUSTIFICATIVES
+// -------------------------------------------------------------
+
+model ProjectDocument {
+  id                  String                  @id @default(uuid()) @db.VarChar(36)
+  projectId           String                  @db.VarChar(36)
+  project             Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  disbursementId      String?                 @db.VarChar(36)
+  disbursement        FinancialDisbursement?  @relation(fields: [disbursementId], references: [id], onDelete: SetNull)
+  fieldReportId       String?                 @db.VarChar(36)
+  fieldReport         FieldReport?            @relation(fields: [fieldReportId], references: [id], onDelete: SetNull)
+
+  title               String                  @db.VarChar(200)
+  fileName            String                  @db.VarChar(255)
+  fileMimeType        String                  @db.VarChar(100)
+  fileSizeBytes       BigInt
+  fileStoragePath     String                  @db.VarChar(500)
+  fileHashSha256      String                  @db.VarChar(64) // Empreinte d'intégrité anti-falsification
+  confidentiality     DocumentConfidentiality @default(RESTRICTED_ADMIN)
+  uploadedByUserId    String                  @db.VarChar(36)
+  createdAt           DateTime                @default(now())
+
+  @@index([projectId])
+  @@index([disbursementId])
+  @@index([fileHashSha256])
+  @@map("doc_project_files")
+}
+
+// -------------------------------------------------------------
+// 10. JOURNAL RÉGALIEN D'AUDIT IMMUABLE
+// -------------------------------------------------------------
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  userId      String?  @db.VarChar(36)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action      String   @db.VarChar(100) // ex: AUTH_LOGIN, PROJECT_CREATE, WF_VISA_1_TECH, WF_VISA_2_INST
+  entityName  String   @db.VarChar(60)  // ex: Project, FinancialDisbursement, User
+  entityId    String   @db.VarChar(64)
+  departmentId String? @db.VarChar(36)
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.VarChar(255)
+  detailsJson String?  @db.LongText     // Payload différentiel ou capture d'état
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityName, entityId])
+  @@index([createdAt])
+  @@map("audit_system_logs")
+}
+
+// -------------------------------------------------------------
+// 11. JOURNAL DE SYNCHRONISATION HORS LIGNE
+// -------------------------------------------------------------
+
+model SyncQueueLog {
+  id              String   @id @default(uuid()) @db.VarChar(36)
+  clientSyncId    String   @unique @db.VarChar(64) // Clé d'idempotence
+  userId          String   @db.VarChar(36)
+  operation       String   @db.VarChar(50) // CREATE_REPORT, UPLOAD_PROOF, UPDATE_GEO
+  status          String   @db.VarChar(30) // APPLIED, CONFLICT_DETECTED, REJECTED
+  conflictDetails String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([clientSyncId])
+  @@map("sync_queue_logs")
+}

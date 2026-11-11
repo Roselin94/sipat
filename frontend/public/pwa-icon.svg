@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#007A3D"/>
+  <path d="M92 344 194 168h72l-28 48h165l-38 66H200l-38 62z" fill="#FFD100"/>
+  <path d="M164 344 266 168h72l-28 48h105l-38 66H274l-38 62z" fill="#fff"/>
+  <path d="M236 344 338 168h72L308 344z" fill="#DC241F"/>
+  <text x="256" y="426" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="54" font-weight="700">SIPAT</text>
+</svg>

@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # Datacenter Gouvernemental : Base de données MySQL 8.4 souveraine
+  sipat-db:
+    image: mysql:8.4
+    container_name: sipat-mysql-datacenter
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-SipatGovRootSecure2026!}
+      MYSQL_DATABASE: sipat_db
+      MYSQL_USER: sipat_app
+      MYSQL_PASSWORD: ${DB_APP_PASSWORD:-SipatAppGovSecurePass2026!}
+    volumes:
+      - sipat_mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    command: >
+      --default-authentication-plugin=caching_sha2_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=1G
+    networks:
+      - sipat-datacenter-net
+
+  # Datacenter Gouvernemental : API Core SIPAT
+  sipat-backend:
+    build:
+      context: ../backend
+      dockerfile: ../infrastructure/docker/Dockerfile.backend
+    container_name: sipat-api-datacenter
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DATABASE_URL: mysql://sipat_app:${DB_APP_PASSWORD:-SipatAppGovSecurePass2026!}@sipat-db:3306/sipat_db
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+    depends_on:
+      - sipat-db
+    networks:
+      - sipat-datacenter-net
+      - sipat-interconnection-net
+
+  # Zone Cloud DMZ : Reverse Proxy NGINX & WAF Sécurisé
+  sipat-proxy-cloud:
+    image: nginx:alpine
+    container_name: sipat-cloud-reverse-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../infrastructure/security/certs:/etc/nginx/certs:ro
+    depends_on:
+      - sipat-backend
+    networks:
+      - sipat-interconnection-net
+
+networks:
+  sipat-datacenter-net:
+    internal: true # Réseau interne gouvernemental hermétique sans exposition internet directe
+  sipat-interconnection-net:
+    driver: bridge
+
+volumes:
+  sipat_mysql_data:
+    driver: local
+
