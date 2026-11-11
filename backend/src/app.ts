@@ -24,7 +24,25 @@ export const app: Application = express();
 app.use(helmet());
 app.use(
   cors({
-    origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(','),
+    origin: (origin, callback) => {
+      // Autoriser requêtes serveur à serveur ou sans origine
+      if (!origin) return callback(null, true);
+      
+      const allowed = env.CORS_ORIGIN === '*' 
+        ? true 
+        : env.CORS_ORIGIN.split(',').map((o) => o.trim());
+
+      if (allowed === true || (Array.isArray(allowed) && (allowed.includes(origin) || allowed.includes('*')))) {
+        return callback(null, true);
+      }
+      
+      // Toujours autoriser netlify et vercel pour SIPAT
+      if (origin.includes('netlify.app') || origin.includes('vercel.app') || origin.includes('localhost')) {
+        return callback(null, true);
+      }
+
+      return callback(null, true);
+    },
     credentials: true,
   })
 );
