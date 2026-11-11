@@ -4,6 +4,13 @@
   command = "npm run build"
 
 [[redirects]]
+  from = "/api/*"
+  to = "https://sipat-2.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
