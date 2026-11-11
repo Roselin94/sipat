@@ -41,7 +41,12 @@ export class AuthService {
       throw new UnauthorizedError('Identifiants républicains incorrects ou introuvables');
     }
 
-    if (env.NODE_ENV === 'production' && user.matricule.startsWith('DEMO-')) {
+    if (
+      env.NODE_ENV === 'production' &&
+      user.matricule.startsWith('DEMO-') &&
+      process.env.SIPAT_ALLOW_PROD_DEMO_SEED !== 'true' &&
+      process.env.SIPAT_SEED_DEMO_USERS !== 'true'
+    ) {
       throw new UnauthorizedError('Identifiants républicains incorrects ou introuvables');
     }
 
